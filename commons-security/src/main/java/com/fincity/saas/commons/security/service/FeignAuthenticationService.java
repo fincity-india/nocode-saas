@@ -14,39 +14,38 @@ import reactor.core.publisher.Mono;
 @Service
 public class FeignAuthenticationService implements IAuthenticationService {
 
-	@Autowired(required = false)
-	private IFeignSecurityService feignAuthService;
+    @Autowired(required = false)
+    private IFeignSecurityService feignAuthService;
 
-	@Override
-	public Mono<Authentication> getAuthentication(boolean isBasic, String bearerToken, ServerHttpRequest request) {
+    @Override
+    public Mono<Authentication> getAuthentication(boolean isBasic, String bearerToken, ServerHttpRequest request) {
 
-		if (feignAuthService == null)
-			return Mono.empty();
+        if (feignAuthService == null)
+            return Mono.empty();
 
-		String host = request.getURI()
-		        .getHost();
-		String port = "" + request.getURI()
-		        .getPort();
+        String host = request.getURI()
+                .getHost();
+        String port = "" + request.getURI()
+                .getPort();
 
-		List<String> forwardedHost = request.getHeaders()
-		        .get("X-Forwarded-Host");
+        List<String> forwardedHost = request.getHeaders()
+                .get("X-Forwarded-Host");
 
-		if (forwardedHost != null && !forwardedHost.isEmpty()) {
-			host = forwardedHost.get(0);
-		}
+        if (forwardedHost != null && !forwardedHost.isEmpty()) {
+            host = forwardedHost.get(0);
+        }
 
-		List<String> forwardedPort = request.getHeaders()
-		        .get("X-Forwarded-Port");
-		if (forwardedPort != null && !forwardedPort.isEmpty()) {
-			port = forwardedPort.get(0);
-		}
+        List<String> forwardedPort = request.getHeaders()
+                .get("X-Forwarded-Port");
+        if (forwardedPort != null && !forwardedPort.isEmpty()) {
+            port = forwardedPort.get(0);
+        }
 
-		
-		return this.feignAuthService.contextAuthentication(isBasic ? "basic " + bearerToken : bearerToken, host, port)
-		        .map(Authentication.class::cast)
+        return this.feignAuthService.contextAuthentication(isBasic ? "Basic " + bearerToken : bearerToken, host, port)
+                .map(Authentication.class::cast)
 
-		;
+        ;
 
-	}
+    }
 
 }

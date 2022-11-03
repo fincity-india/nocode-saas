@@ -67,7 +67,7 @@ public class JWTTokenFilter implements WebFilter {
 
 			if (bearerToken.startsWith("Bearer ")) {
 				bearerToken = bearerToken.substring(7);
-			} else if (bearerToken.startsWith("basic ")) {
+			} else if (bearerToken.startsWith("Basic ")) {
 				isBasic = true;
 				bearerToken = bearerToken.substring(6);
 			}

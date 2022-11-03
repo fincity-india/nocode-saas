@@ -1,11 +1,13 @@
 package com.fincity.security.service;
 
 import static com.fincity.nocode.reactor.util.FlatMapUtil.flatMapMono;
+import static com.fincity.nocode.reactor.util.FlatMapUtil.flatMapMonoLog;
 import static com.fincity.nocode.reactor.util.FlatMapUtil.flatMapMonoWithNull;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,7 +31,6 @@ import com.fincity.saas.commons.model.condition.FilterCondition;
 import com.fincity.saas.commons.model.condition.FilterConditionOperator;
 import com.fincity.saas.commons.security.service.IAuthenticationService;
 import com.fincity.saas.commons.service.CacheService;
-
 import com.fincity.security.dto.Client;
 import com.fincity.security.dto.ClientPasswordPolicy;
 import com.fincity.security.dto.SoxLog;
@@ -129,7 +130,7 @@ public class AuthenticationService implements IAuthenticationService {
 		        ? this.clientService.getClientBy(clientCode.get(0))
 		        : this.clientService.getClientBy(request);
 
-		return flatMapMono(
+		return flatMapMonoLog(
 
 		        () -> loggedInClient,
 
@@ -292,9 +293,10 @@ public class AuthenticationService implements IAuthenticationService {
 		        () -> cacheService.get(CACHE_NAME_TOKEN, bearerToken)
 		                .map(ContextAuthentication.class::cast),
 
-		        cachedCA -> checkTokenOrigin(request, this.extractClamis(bearerToken)),
+		        cachedCA -> basic ? Mono.empty() : checkTokenOrigin(request, this.extractClamis(bearerToken)),
 
-		        (cachedCA, claims) -> cachedCA == null ? getAuthenticationIfNotInCache(basic, bearerToken, request)
+		        (cachedCA, claims) -> cachedCA == null || basic
+		                ? getAuthenticationIfNotInCache(basic, bearerToken, request)
 		                : Mono.just(cachedCA));
 	}
 
@@ -323,9 +325,69 @@ public class AuthenticationService implements IAuthenticationService {
 
 		} else {
 			// Need to add the basic authorisation...
-		}
 
-		return Mono.empty();
+			byte[] byteDecoded = Base64.getDecoder()
+			        .decode(bearerToken.getBytes());
+
+			String userNameDecoded = new String(byteDecoded); // first index of :
+
+			System.err.println(userNameDecoded + " from auth");
+
+			// get user and client object and convert them to make context Authentication
+
+			// create spring authentication and return it and don't cache it
+
+			List<String> clientCode = request.getHeaders()
+			        .get("clientCode");
+
+			Mono<Client> loggedInClient = (clientCode != null && !clientCode.isEmpty())
+			        ? this.clientService.getClientBy(clientCode.get(0))
+			        : this.clientService.getClientBy(request);
+
+			AuthenticationRequest authRequest = new AuthenticationRequest();
+
+			int ind = userNameDecoded.indexOf(':');
+			authRequest.setUserName(userNameDecoded.substring(0, ind));
+			authRequest.setPassword(userNameDecoded.substring(ind + 1));
+
+			return flatMapMonoLog(
+
+			        () -> loggedInClient,
+
+			        lnClient -> userService.findByClientIdsUserName(lnClient.getId(), authRequest.getUserName(),
+			                authRequest.getIdentifierType()),
+
+			        (lnClient, user) -> this.clientService.readInternal(user.getClientId()),
+
+			        (lnClient, user, client) -> this.checkPassword(authRequest, user),
+
+			        (lnClient, user, client, passwordChecked) -> clientService.getClientPasswordPolicy(client.getId()),
+
+			        (lnClient, user, client, passwordChecked, policy) -> this.checkFailedAttempts(user, policy),
+
+			        (lnClient, user, client, passwordChecked, policy, j) ->
+					{
+
+				        userService.resetFailedAttempt(user.getId())
+				                .subscribe();
+
+				        soxLogService.create(new SoxLog().setObjectId(user.getId())
+				                .setActionName(SecuritySoxLogActionName.READ)
+				                .setObjectName(SecuritySoxLogObjectName.USER)
+				                .setDescription("Successful"))
+				                .subscribe();
+
+				        System.err.println(user + " from auth flat");
+
+				        // make spring authentication from here
+				        return this.makeSpringAuthenticationForBasic(user, lnClient, bearerToken)
+				                .map(Authentication.class::cast);
+			        }
+
+			).switchIfEmpty(Mono.error(new GenericException(HttpStatus.UNAUTHORIZED, resourceService
+			        .getDefaultLocaleMessage(SecurityMessageResourceService.USER_CREDENTIALS_MISMATCHED))));
+
+		}
 	}
 
 	private JWTClaims extractClamis(String bearerToken) {
@@ -360,6 +422,24 @@ public class AuthenticationService implements IAuthenticationService {
 		                typ) -> Mono.just(new ContextAuthentication(u.toContextUser(), true,
 		                        claims.getLoggedInClientId(), claims.getLoggedInClientCode(), typ.getT1(), typ.getT2(),
 		                        tokenObject.getToken(), tokenObject.getExpiresAt())));
+	}
+
+	private Mono<ContextAuthentication> makeSpringAuthenticationForBasic(User user, Client loggedInClient,
+	        String basicToken) {
+
+		return flatMapMono(
+
+		        () -> this.clientService.getClientTypeNCode(user.getClientId()),
+
+		        clientType ->
+				{
+			        System.out.println(clientType + " from spring auth step ");
+
+			        return Mono.just(new ContextAuthentication(user.toContextUser(), true, loggedInClient.getId()
+			                .toBigInteger(), loggedInClient.getCode(), clientType.getT1(), clientType.getT2(),
+			                basicToken, LocalDateTime.now()
+			                        .plusMinutes(5)));
+		        });
 	}
 
 	private Mono<JWTClaims> checkTokenOrigin(ServerHttpRequest request, JWTClaims jwtClaims) {
