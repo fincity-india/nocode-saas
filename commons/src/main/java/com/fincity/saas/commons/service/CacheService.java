@@ -2,6 +2,7 @@ package com.fincity.saas.commons.service;
 
 import java.util.Collection;
 import java.util.Objects;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import javax.annotation.PostConstruct;
@@ -9,6 +10,7 @@ import javax.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.cache.CacheType;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Service;
@@ -49,10 +51,13 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 	@Value("${redis.cache.prefix:unk}")
 	private String redisPrefix;
 
+	@Value("${spring.cache.type:}")
+	private CacheType cacheType;
+
 	@PostConstruct
 	public void registerEviction() {
 
-		if (redisAsyncCommand == null)
+		if (redisAsyncCommand == null || this.cacheType == CacheType.NONE)
 			return;
 
 		subAsyncCommand.subscribe(channel);
@@ -60,6 +65,9 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 	}
 
 	public Mono<Boolean> evict(String cName, String key) {
+
+		if (this.cacheType == CacheType.NONE)
+			return Mono.just(true);
 
 		String cacheName = this.redisPrefix + "-" + cName;
 
@@ -87,6 +95,9 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 
 	public Mono<Boolean> evict(String cacheName, Object... keys) {
 
+		if (this.cacheType == CacheType.NONE)
+			return Mono.just(true);
+
 		return makeKey(keys).flatMap(e -> this.evict(cacheName, e));
 	}
 
@@ -102,6 +113,9 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 	}
 
 	public <T> Mono<T> put(String cName, T value, Object... keys) {
+
+		if (this.cacheType == CacheType.NONE)
+			return Mono.just(value);
 
 		String cacheName = this.redisPrefix + "-" + cName;
 
@@ -128,6 +142,9 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 	@SuppressWarnings("unchecked")
 	public <T> Mono<T> get(String cName, Object... keys) {
 
+		if (this.cacheType == CacheType.NONE)
+			return Mono.empty();
+
 		String cacheName = this.redisPrefix + "-" + cName;
 
 		return this.makeKey(keys)
@@ -143,11 +160,36 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 
 			        return value.switchIfEmpty(
 			                Mono.defer(() -> Mono.fromCompletionStage(redisAsyncCommand.hget(cacheName, key))
-			                		.map(vw -> (T) vw)));
-		        });
+			                        .map(vw -> (T) vw)));
+		        })
+		        .map(e -> e instanceof CacheObject c ? (T) c.getObject() : e);
+	}
+
+	@SuppressWarnings("unchecked")
+	public <T> Mono<T> cacheValueOrGet(String cName, Supplier<Mono<T>> supplier, Object... keys) {
+
+		return this.makeKey(keys)
+		        .flatMap(key -> this.get(cName, key)
+		                .switchIfEmpty(Mono.defer(() -> supplier.get()
+		                        .flatMap(value -> this.put(cName, value, key)))))
+		        .map(e -> (T) (e instanceof CacheObject co ? co.getObject() : e));
+	}
+
+	@SuppressWarnings("unchecked")
+	public <T> Mono<T> cacheEmptyValueOrGet(String cName, Supplier<Mono<T>> supplier, Object... keys) {
+
+		return this.makeKey(keys)
+		        .flatMap(key -> this.<CacheObject>get(cName, key)
+		                .switchIfEmpty(Mono.defer(() -> supplier.get()
+		                        .flatMap(value -> this.put(cName, new CacheObject(value), key))
+		                        .switchIfEmpty(Mono.defer(() -> this.put(cName, new CacheObject(null), keys))))))
+		        .flatMap(e -> Mono.justOrEmpty((T) e.getObject()));
 	}
 
 	public Mono<Boolean> evictAll(String cName) {
+
+		if (this.cacheType == CacheType.NONE)
+			return Mono.just(true);
 
 		String cacheName = this.redisPrefix + "-" + cName;
 
@@ -170,6 +212,9 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 	}
 
 	public Mono<Boolean> evictAllCaches() {
+
+		if (this.cacheType == CacheType.NONE)
+			return Mono.just(true);
 
 		if (pubAsyncCommand != null) {
 
@@ -229,4 +274,5 @@ public class CacheService extends RedisPubSubAdapter<String, String> {
 		else
 			cache.evictIfPresent(cacheKey);
 	}
+
 }
