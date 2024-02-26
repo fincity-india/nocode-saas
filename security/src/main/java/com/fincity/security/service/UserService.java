@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.jooq.types.ULong;
+import org.jooq.types.UShort;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
@@ -179,7 +180,7 @@ public class UserService extends AbstractSecurityUpdatableDataService<SecurityUs
 			                .getClientId()), entity.getClientId())
 			                .flatMap(e -> e.booleanValue() ? Mono.just(entity) : Mono.empty());
 		        })
-		        .flatMap(e -> this.passwordPolicyCheck(e, password))
+		        .flatMap(e -> this.passwordPolicyCheck(e, password))  // validation of password while creating user
 		        .flatMap(u -> this.dao
 		                .checkAvailabilityWithClientId(u.getClientId(), u.getUserName(), u.getEmailId(),
 		                        u.getPhoneNumber())
@@ -204,10 +205,12 @@ public class UserService extends AbstractSecurityUpdatableDataService<SecurityUs
 		                        new GenericException(HttpStatus.FORBIDDEN, StringFormatter.format(msg, "User"))))));
 	}
 
-	private Mono<User> passwordPolicyCheck(User user, String password) {
+	private Mono<User> passwordPolicyCheck(User user, String password) { // modified this method for validating password
+	                                                                     // of user while it was being created
 
-		return this.clientService.validatePasswordPolicy(user.getClientId(), password)
-		        .map(e -> user);
+		return this.clientPasswordPolicyService.checkAllConditions(user.getClientId(), password)
+		        .map(valid -> user);
+
 	}
 
 	private Mono<User> setPassword(User u, String password) {
@@ -602,7 +605,7 @@ public class UserService extends AbstractSecurityUpdatableDataService<SecurityUs
 		return this.dao.checkRoleCreatedByUser(roleId, userId);
 	}
 
-	public Mono<Boolean> updateNewPassword(String urlAppCode, String urlClientCode, ULong reqUserId,
+	public Mono<Boolean> updateNewPassword(String urlAppCode, String urlClientCode, ULong loggedInClientId, ULong reqUserId,
 	        RequestUpdatePassword requestPassword, boolean isResetPassword) {
 
 		if (StringUtil.safeIsBlank(requestPassword.getNewPassword()))
@@ -619,7 +622,9 @@ public class UserService extends AbstractSecurityUpdatableDataService<SecurityUs
 		                requestPassword.getNewPassword()),
 
 		        (user, isUpdatable, isValid) -> isResetPassword ? Mono.just(true)
-		                : this.checkPasswordInPastPasswords(user, requestPassword.getNewPassword()),
+		                : this.checkPasswordInPastPasswords(urlAppCode, requestPassword.getNewPassword(),
+		                        loggedInClientId,
+		                        user),
 
 		        (user, isUpdatable, isValid, isPastPassword) -> this.dao
 		                .setPassword(reqUserId, requestPassword.getNewPassword(), user.getId())
@@ -737,11 +742,11 @@ public class UserService extends AbstractSecurityUpdatableDataService<SecurityUs
 		return Mono.just(false);
 	}
 
-	private Mono<Boolean> checkPasswordInPastPasswords(User user, String newPassword) {
+	private Mono<Boolean> checkPasswordInPastPasswords(String appCode, String newPassword, ULong loggedInClientId,  User user) {
 
 		return flatMapMono(
 
-		        () -> this.dao.getPastPasswordsBasedOnPolicy(user.getId(), user.getClientId()),
+		        () -> this.dao.getPastPasswordsBasedOnPolicy(appCode, user.getClientId(), loggedInClientId, user.getId()),
 
 		        pastPasswords ->
 				{
@@ -760,6 +765,30 @@ public class UserService extends AbstractSecurityUpdatableDataService<SecurityUs
 			        return Mono.just(true);
 		        }).contextWrite(Context.of(LogUtil.METHOD_NAME, "UserService.checkPasswordInPastPasswords"));
 
+	}
+	
+	public Mono<Boolean> checkPasswordExpiry(ULong userId, UShort expiryInDays) {
+
+		return this.dao.getLatestPasswordCreationDate(userId)
+		        .flatMap(createdAt ->
+				{
+			        LocalDateTime pastDate = createdAt.plusDays(expiryInDays.longValue());
+			        return Mono.just(pastDate.isAfter(LocalDateTime.now()));
+
+		        })
+		        .defaultIfEmpty(true);
+
+	}
+	
+	public Mono<Boolean> triggerPasswordExpiryWarning(ULong userId, UShort warnInDays) {
+
+		return this.dao.getLatestPasswordCreationDate(userId)
+		        .flatMap(createdAt ->
+				{
+			        LocalDateTime latestDate = createdAt.plusDays(warnInDays.longValue());
+			        return Mono.just(true);
+		        })
+		        .defaultIfEmpty(true);
 	}
 
 	public Mono<List<UserClient>> findUserClients(AuthenticationRequest authRequest, ServerHttpRequest request) {

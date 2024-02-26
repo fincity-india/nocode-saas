@@ -153,10 +153,10 @@ public class AuthenticationService implements IAuthenticationService {
 
 				(tup, linCCheck) -> this.checkPassword(authRequest, tup.getT3()),
 
-				(tup, linCCheck, passwordChecked) -> this.clientService.getClientPasswordPolicy(tup.getT2()
-						.getId())
-						.flatMap(policy -> this.checkFailedAttempts(tup.getT3(), policy))
-						.defaultIfEmpty(1),
+		        (tup, linCCheck, passwordChecked) -> this.clientService.getClientPasswordPolicy(appCode, tup.getT2()
+		                .getId(), tup.getT1().getId())
+		                .flatMap(policy -> this.checkFailedAttemptsAndPasswordExpiry(tup.getT3(), policy))
+		                .defaultIfEmpty(1),
 
 				(tup, linCCheck, passwordChecked, j) -> {
 
@@ -241,19 +241,43 @@ public class AuthenticationService implements IAuthenticationService {
 						.setAccessTokenExpiryAt(token.getT2()));
 	}
 
-	private Mono<Integer> checkFailedAttempts(User u, ClientPasswordPolicy pol) {
+	private Mono<Integer> checkFailedAttemptsAndPasswordExpiry(User u, ClientPasswordPolicy pol) {
 
 		if (pol.getNoFailedAttempts() != null && pol.getNoFailedAttempts()
-				.shortValue() <= u.getNoFailedAttempt()) {
+		        .shortValue() <= u.getNoFailedAttempt()) {
 
 			soxLogService.create(new SoxLog().setObjectId(u.getId())
-					.setActionName(SecuritySoxLogActionName.LOGIN)
-					.setObjectName(SecuritySoxLogObjectName.USER)
-					.setDescription("Failed password attempts are more than the configuration"))
-					.subscribe();
+			        .setActionName(SecuritySoxLogActionName.LOGIN)
+			        .setObjectName(SecuritySoxLogObjectName.USER)
+			        .setDescription("Failed password attempts are more than the configuration"))
+			        .subscribe();
 
 			return this.credentialError()
-					.map(e -> 1);
+			        .map(e -> 1);
+		}
+
+		if (pol.getPassExpiryInDays() != null) {
+
+
+			return this.userService.checkPasswordExpiry(u.getId(), pol.getPassExpiryInDays())
+			        .flatMap(e ->
+					{
+
+				        if (e.booleanValue())
+					        return Mono.just(1);
+
+				        soxLogService.create(new SoxLog().setObjectId(u.getId())
+				                .setActionName(SecuritySoxLogActionName.LOGIN)
+				                .setObjectName(SecuritySoxLogObjectName.USER)
+				                .setDescription("Password expired"))
+				                .subscribe();
+
+				        return Mono.empty();
+			        })
+			        .switchIfEmpty(
+			                this.resourceService.throwMessage(msg -> new GenericException(HttpStatus.UNAUTHORIZED, msg),
+			                        SecurityMessageResourceService.PASSWORD_EXPIRED));
+
 		}
 
 		return Mono.just(1);

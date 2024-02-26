@@ -228,12 +228,48 @@ public class ClientService
 				() -> this.dao.isBeingManagedBy(managingClientId, clientId), managingClientId, "-", clientId);
 	}
 
-	public Mono<ClientPasswordPolicy> getClientPasswordPolicy(ULong id) {
+	
+	public Mono<ClientPasswordPolicy> getClientPasswordPolicy(String appCode, ULong clientId, ULong loggedInClientId) {
 
-		return cacheService.cacheEmptyValueOrGet(CACHE_NAME_CLIENT_PWD_POLICY,
-				() -> this.dao.getClientPasswordPolicy(id), id);
+		return FlatMapUtil.flatMapMonoWithNull(
+
+		        SecurityContextUtil::getUsersContextAuthentication,
+
+		        ca -> cacheService.<ClientPasswordPolicy>get(CACHE_NAME_CLIENT_PWD_POLICY, ca.getUrlAppCode(), ":",
+		                clientId),
+
+		        (ca, one) -> one != null ? Mono.just(one)
+		                : cacheService.<ClientPasswordPolicy>get(CACHE_NAME_CLIENT_PWD_POLICY, clientId),
+
+		        (ca, one, two) -> two != null ? Mono.just(two)
+		                : cacheService.<ClientPasswordPolicy>get(CACHE_NAME_CLIENT_PWD_POLICY, ca.getUrlAppCode(), ":",
+		                        loggedInClientId),
+
+		        (ca, one, two, three) -> three != null ? Mono.just(three)
+		                : cacheService.<ClientPasswordPolicy>get(CACHE_NAME_CLIENT_PWD_POLICY, loggedInClientId),
+
+		        (ca, one, two, three, four) ->
+				{
+
+			        if (four != null)
+				        return Mono.just(four);
+
+			        return this.dao.getClientPasswordPolicyWithAppCode(appCode, clientId, loggedInClientId)
+			                .flatMap(e -> cacheService.put(CACHE_NAME_CLIENT_PWD_POLICY, e,
+			                        getKey(ca.getUrlAppCode(), e)));
+		        });
+
+
 	}
 
+	private String getKey(String appCode, ClientPasswordPolicy policy) {
+
+		return policy.getAppId() != null ? appCode + ":" + policy.getClientId()
+		        : policy.getClientId()
+		                .toString();
+	}
+
+	
 	public Mono<Tuple2<String, String>> getClientTypeNCode(ULong id) {
 
 		return cacheService.cacheValueOrGet(CACHE_NAME_CLIENT_TYPE, () -> this.dao.getClientTypeNCode(id), id);
@@ -328,28 +364,7 @@ public class ClientService
 				.map(ContextUser::getId)
 				.map(ULong::valueOf);
 	}
-
-	// For creating user.
-	public Mono<Boolean> validatePasswordPolicy(ULong clientId, String password) { // NOSONAR
-
-		return this.dao.getClientPasswordPolicy(clientId)
-				.map(e -> {// NOSONAR
-							// Need to check the password policy
-					return true;
-				})
-				.switchIfEmpty(Mono.just(Boolean.TRUE));
-	}
-
-	// For existing user.
-	public Mono<Boolean> validatePasswordPolicy(ULong clientId, ULong userId, String password) { // NOSONAR
-
-		return this.dao.getClientPasswordPolicy(clientId)
-				.map(e -> { // NOSONAR
-							// Need to check the password policy
-					return true;
-				})
-				.switchIfEmpty(Mono.just(Boolean.TRUE));
-	}
+	
 
 	public Mono<Client> getClientInfoById(BigInteger id) {
 		return this.cacheService.cacheValueOrGet(CACHE_NAME_CLIENT_INFO, () -> this.read(ULong.valueOf(id)), id);
@@ -631,8 +646,8 @@ public class ClientService
 						SecurityMessageResourceService.USER_ALREADY_CREATED));
 	}
 
-	public Mono<ClientRegistrationResponse> register(ClientRegistrationRequest registrationRequest,
-			ServerHttpRequest request, ServerHttpResponse response) {
+	public Mono<ClientRegistrationResponse> register(ClientRegistrationRequest registrationRequest, 
+			ServerHttpRequest request, ServerHttpResponse response) { 
 
 		Mono<ContextAuthentication> checkEmailExistsInIndividualClients = FlatMapUtil.flatMapMono(
 
@@ -702,40 +717,50 @@ public class ClientService
 								.setEventName(EventNames.USER_REGISTERED)
 								.setData(Map.of("client", client, "user", userTuple.getT1(), "token", token,
 										"passwordUsed", userTuple.getT2()))))
-						.flatMap(e -> {
-							if (AppService.APP_PROP_REG_TYPE_NO_VERIFICATION.equals(prop)
-									|| prop.endsWith("_LOGIN_IMMEDIATE")) {
-
-								return this.authenticationService
-										.authenticate(
-												new AuthenticationRequest()
-														.setUserName(CommonsUtil.nonNullValue(
-																registrationRequest.getUserName(),
-																registrationRequest.getEmailId()))
-														.setPassword(registrationRequest.getPassword()),
-												request, response)
-										.map(x -> new ClientRegistrationResponse(true, x));
-							}
-
-							return Mono.just(new ClientRegistrationResponse(true, null));
-						})
-						.flatMap(e -> {
-							if (prop.equals(AppService.APP_PROP_REG_TYPE_CODE_IMMEDIATE)
-									|| prop.equals(AppService.APP_PROP_REG_TYPE_CODE_IMMEDIATE_LOGIN_IMMEDIATE)
-									|| prop.equals(AppService.APP_PROP_REG_TYPE_CODE_ON_REQUEST)
-									|| prop.equals(AppService.APP_PROP_REG_TYPE_CODE_ON_REQUEST_LOGIN_IMMEDIATE))
-
-								this.codeAccessDAO
-										.deleteRecordAfterRegistration(ca.getUrlAppCode(),
-												ULongUtil.valueOf(ca.getLoggedInFromClientId()),
-												registrationRequest.getEmailId(), registrationRequest.getCode())
-										.subscribe();
-
-							return Mono.just(e);
-						})
+		                .flatMap(e -> validateNoVerificationOrLoginImmediate(registrationRequest, request, response,
+		                        prop))
+		                .flatMap(res -> validateAppPropertiesWithCode(registrationRequest, res, ca, prop))
 
 		);
 		return mono.contextWrite(Context.of(LogUtil.METHOD_NAME, "ClientService.register"));
+	}
+	
+	private Mono<ClientRegistrationResponse> validateNoVerificationOrLoginImmediate(
+	        ClientRegistrationRequest registrationRequest, ServerHttpRequest request, ServerHttpResponse response,
+	        String prop) {
+
+		if (AppService.APP_PROP_REG_TYPE_NO_VERIFICATION.equals(prop)
+				|| prop.endsWith("_LOGIN_IMMEDIATE")) {
+
+			return this.authenticationService
+					.authenticate(
+							new AuthenticationRequest()
+									.setUserName(CommonsUtil.nonNullValue(
+											registrationRequest.getUserName(),
+											registrationRequest.getEmailId()))
+									.setPassword(registrationRequest.getPassword()),
+							request, response)
+					.map(x -> new ClientRegistrationResponse(true, x));
+		}
+
+		return Mono.just(new ClientRegistrationResponse(true, null));
+
+	}
+	
+	private Mono<ClientRegistrationResponse> validateAppPropertiesWithCode(ClientRegistrationRequest req, ClientRegistrationResponse res,
+	        ContextAuthentication ca, String prop) {
+
+		if (prop.equals(AppService.APP_PROP_REG_TYPE_CODE_IMMEDIATE)
+		        || prop.equals(AppService.APP_PROP_REG_TYPE_CODE_IMMEDIATE_LOGIN_IMMEDIATE)
+		        || prop.equals(AppService.APP_PROP_REG_TYPE_CODE_ON_REQUEST)
+		        || prop.equals(AppService.APP_PROP_REG_TYPE_CODE_ON_REQUEST_LOGIN_IMMEDIATE))
+
+			this.codeAccessDAO
+			        .deleteRecordAfterRegistration(ca.getUrlAppCode(), ULongUtil.valueOf(ca.getLoggedInFromClientId()),
+			                req.getEmailId(), req.getCode())
+			        .subscribe();
+
+		return Mono.just(res);
 	}
 
 	private Mono<Tuple2<User, String>> registerUser(ClientRegistrationRequest request, Client client, String regType) {
@@ -887,4 +912,5 @@ public class ClientService
 		return this.cacheService.cacheValueOrGet("CACHE_SYSTEM_CLIENT_ID", () -> this.dao.getSystemClientId(),
 				"SYSTEM");
 	}
+	
 }
