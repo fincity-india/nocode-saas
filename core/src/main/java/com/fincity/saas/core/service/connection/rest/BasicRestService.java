@@ -13,6 +13,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
+import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MimeTypeUtils;
@@ -23,10 +24,12 @@ import org.springframework.web.util.UriBuilder;
 
 import com.fincity.nocode.reactor.util.FlatMapUtil;
 import com.fincity.saas.commons.exeception.GenericException;
+import com.fincity.saas.commons.security.util.SecurityContextUtil;
 import com.fincity.saas.commons.util.LogUtil;
 import com.fincity.saas.core.document.Connection;
 import com.fincity.saas.core.dto.RestRequest;
 import com.fincity.saas.core.dto.RestResponse;
+import com.fincity.saas.core.feign.IFeignFilesService;
 import com.fincity.saas.core.service.CoreMessageResourceService;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
@@ -48,11 +51,13 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 
 	private final CoreMessageResourceService msgService;
 	private final Gson gson;
+	private final IFeignFilesService feignCoreService;
 
-	public BasicRestService(CoreMessageResourceService msgService, Gson gson) {
+	public BasicRestService(CoreMessageResourceService msgService, Gson gson, IFeignFilesService feignCoreService) {
 
 		this.msgService = msgService;
 		this.gson = gson;
+		this.feignCoreService = feignCoreService;
 	}
 
 	@Override
@@ -90,18 +95,18 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 									.equalsIgnoreCase("DELETE")))
 
 						return requestBuilder
-								.exchangeToMono(clientResponse -> handleResponse(clientResponse, tup.getT3()));
+								.exchangeToMono(clientResponse -> handleResponse(clientResponse, tup.getT3(),request));
 
 					if (headers.getContentType() != null && headers.getContentType()
 							.isCompatibleWith(MediaType.MULTIPART_FORM_DATA)) {
 						var newPayload = getFormDataFromJson(request.getPayload());
-						return doRequestWithFormData(newPayload, requestBuilder, tup.getT3());
+						return doRequestWithFormData(newPayload, requestBuilder, tup.getT3(), request);
 					}
 
 					if (headers.getContentType() != null && headers.getContentType()
 							.isCompatibleWith(MediaType.APPLICATION_FORM_URLENCODED)) {
 						var newPayload = getURLFormDataFromJson(request.getPayload());
-						return doRequestWithFormData(newPayload, requestBuilder, tup.getT3());
+						return doRequestWithFormData(newPayload, requestBuilder, tup.getT3(), request);
 					}
 
 					return requestBuilder
@@ -109,7 +114,7 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 									!request.getPayload().isJsonNull() ? request.getPayload() : new JsonObject(),
 									Object.class))
 							.exchangeToMono(clientResponse -> handleResponse(clientResponse, tup
-									.getT3()))
+									.getT3(),request))
 							.onErrorReturn(new RestResponse().setStatus(HttpStatus.BAD_REQUEST.value())
 									.setData("Url not found with the given connection"));
 				})
@@ -187,15 +192,15 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 	}
 
 	private Mono<RestResponse> doRequestWithFormData(MultipartBodyBuilder builder,
-			WebClient.RequestBodySpec requestBuilder, Duration timeoutDuration) {
+	        WebClient.RequestBodySpec requestBuilder, Duration timeoutDuration, RestRequest request) {
 		return requestBuilder.bodyValue(builder.build())
-				.exchangeToMono(clientResponse -> handleResponse(clientResponse, timeoutDuration));
+		        .exchangeToMono(clientResponse -> handleResponse(clientResponse, timeoutDuration, request));
 	}
 
 	private Mono<RestResponse> doRequestWithFormData(MultiValueMap<String, String> builder,
-			WebClient.RequestBodySpec requestBuilder, Duration timeoutDuration) {
+			WebClient.RequestBodySpec requestBuilder, Duration timeoutDuration, RestRequest request) {
 		return requestBuilder.bodyValue(builder)
-				.exchangeToMono(clientResponse -> handleResponse(clientResponse, timeoutDuration));
+				.exchangeToMono(clientResponse -> handleResponse(clientResponse, timeoutDuration, request));
 	}
 
 	private Mono<Tuple3<String, HttpHeaders, Duration>> applyConnectionDetails(Connection connection, String url,
@@ -258,16 +263,21 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 		}
 		return uriBuilder;
 	}
+	
+	private Mono<RestResponse> handleResponse(ClientResponse clientResponse, Duration timeout, RestRequest request) {
+		
 
-	private Mono<RestResponse> handleResponse(ClientResponse clientResponse, Duration timeout) {
+		
 		HttpHeaders headers = clientResponse.headers()
 				.asHttpHeaders();
 		MediaType contentType = headers.getContentType();
 
 		RestResponse restResponse = new RestResponse();
+		
 		restResponse.setHeaders(clientResponse.headers()
 				.asHttpHeaders()
 				.toSingleValueMap());
+		
 		restResponse.setStatus(clientResponse.statusCode()
 				.value());
 
@@ -276,6 +286,30 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 					.map(restResponse::setData)
 					.timeout(timeout)
 					.onErrorResume(throwable -> Mono.just(createErrorResponse(throwable)));
+		
+		// handle download file case here
+		
+		if (request.isSaveAsFile()) {
+			
+			// process through the files server
+			
+
+			return FlatMapUtil.flatMapMono(
+
+			        SecurityContextUtil::getUsersContextAuthentication,
+
+			        ca -> clientResponse.bodyToMono(FilePart.class),
+
+			        (ca, file) -> this.feignCoreService.create(Mono.just(file), ca.getClientCode(), "Y",
+			                request.getFileName(), null),
+
+			        (ca, file, uploadedFile) -> Mono.just(restResponse.setData(uploadedFile))
+
+			)
+			        .switchIfEmpty(msgService.throwMessage(msg -> new GenericException(HttpStatus.BAD_REQUEST, msg),
+			                "cannot convert to filepart or call files server"));
+
+		}
 
 		if (contentType.isCompatibleWith(MediaType.APPLICATION_JSON)) {
 
@@ -283,6 +317,7 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 					.map(jsonData -> restResponse.setData(processJsonResponse(jsonData)))
 					.timeout(timeout)
 					.onErrorResume(throwable -> Mono.just(createErrorResponse(throwable)));
+			
 		} else if (contentType.getType()
 				.equals(MimeTypeUtils.APPLICATION_OCTET_STREAM.getType())) {
 
@@ -296,6 +331,8 @@ public class BasicRestService extends AbstractRestService implements IRestServic
 				.map(restResponse::setData)
 				.timeout(timeout)
 				.onErrorResume(throwable -> Mono.just(createErrorResponse(throwable)));
+	
+		
 	}
 
 	private Object processJsonResponse(String jsonData) {

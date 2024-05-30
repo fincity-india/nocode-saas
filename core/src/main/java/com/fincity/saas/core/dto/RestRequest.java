@@ -21,4 +21,8 @@ public class RestRequest {
 	private String method;
 	private JsonElement payload;
 	private boolean ignoreDefaultHeaders = false;
+	private String fileName;
+	private String resourceType;
+	private String saveLocation;
+	private boolean saveAsFile;
 }
