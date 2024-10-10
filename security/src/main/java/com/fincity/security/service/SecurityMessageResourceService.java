@@ -1,14 +1,11 @@
 package com.fincity.security.service;
 
+import com.fincity.saas.commons.configuration.service.AbstractMessageService;
+import com.fincity.saas.commons.security.util.SecurityContextUtil;
 import java.util.Locale;
 import java.util.Map;
 import java.util.ResourceBundle;
-
 import org.springframework.stereotype.Service;
-
-import com.fincity.saas.commons.configuration.service.AbstractMessageService;
-import com.fincity.saas.commons.security.util.SecurityContextUtil;
-
 import reactor.core.publisher.Mono;
 
 @Service
@@ -89,6 +86,7 @@ public class SecurityMessageResourceService extends AbstractMessageService {
 	public static final String MISSING_PASSWORD = "missing_password";
 	public static final String FIELDS_MISSING = "fields_missing";
 	public static final String MANDATORY_APP_CODE = "mandatory_app_code";
+	public static final String MANDATORY_CLIENT_CODE = "mandatory_client_code";
 	public static final String CLIENT_CODE_OR_ID_ONLY_ONE = "client_code_or_id_only_one";
 	public static final String FORBIDDEN_APP_REG_OBJECTS = "forbidden_app_reg_objects";
 	public static final String SUBDOMAIN_ALREADY_EXISTS = "subdomain_already_exists";
@@ -96,6 +94,8 @@ public class SecurityMessageResourceService extends AbstractMessageService {
 	public static final String FORBIDDEN_COPY_ROLE_PERMISSION = "forbidden_copying_role_permission";
 	public static final String ACTIVE_INACTIVE_ERROR = "active_inactive_error";
 	public static final String HIERARCHY_ERROR = "hierarchy_error";
+	public static final String SESSION_EXPIRED = "session_expired";
+	public static final String SOCIAL_LOGIN_FAILED = "social_login_failed";
 
 	public SecurityMessageResourceService() {
 
@@ -114,8 +114,7 @@ public class SecurityMessageResourceService extends AbstractMessageService {
 				x = this.bundleMap.get(Locale.forLanguageTag(l.getLanguage()));
 
 			return x == null ? Mono.empty() : Mono.just(x);
-		})
-				.defaultIfEmpty(this.bundleMap.get(Locale.ENGLISH))
+		}).defaultIfEmpty(this.bundleMap.get(Locale.ENGLISH))
 				.map(e -> e.getString(e.containsKey(messageId) ? messageId : UKNOWN_ERROR));
 
 	}

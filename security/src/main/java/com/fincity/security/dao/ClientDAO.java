@@ -14,11 +14,28 @@ import static com.fincity.security.jooq.tables.SecurityRolePermission.SECURITY_R
 import static com.fincity.security.jooq.tables.SecurityUser.SECURITY_USER;
 import static com.fincity.security.jooq.tables.SecurityUserRolePermission.SECURITY_USER_ROLE_PERMISSION;
 
+import com.fincity.nocode.reactor.util.FlatMapUtil;
+import com.fincity.saas.commons.jooq.dao.AbstractUpdatableDAO;
+import com.fincity.saas.commons.model.condition.AbstractCondition;
+import com.fincity.saas.commons.security.jwt.ContextAuthentication;
+import com.fincity.saas.commons.security.model.ClientUrlPattern;
+import com.fincity.saas.commons.security.util.SecurityContextUtil;
+import com.fincity.saas.commons.util.BooleanUtil;
+import com.fincity.saas.commons.util.LogUtil;
+import com.fincity.security.dto.Client;
+import com.fincity.security.dto.ClientPasswordPolicy;
+import com.fincity.security.dto.Package;
+import com.fincity.security.dto.Role;
+import com.fincity.security.jooq.enums.SecurityClientStatusCode;
+import com.fincity.security.jooq.tables.records.SecurityClientPackageRecord;
+import com.fincity.security.jooq.tables.records.SecurityClientRecord;
+import com.fincity.security.jooq.tables.records.SecurityUserRolePermissionRecord;
+import com.fincity.security.model.Integration;
+import com.fincity.security.model.IntegrationScope;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-
 import org.jooq.Condition;
 import org.jooq.DeleteQuery;
 import org.jooq.Record;
@@ -28,24 +45,6 @@ import org.jooq.Table;
 import org.jooq.impl.DSL;
 import org.jooq.types.ULong;
 import org.springframework.stereotype.Service;
-
-import com.fincity.nocode.reactor.util.FlatMapUtil;
-import com.fincity.saas.commons.jooq.dao.AbstractUpdatableDAO;
-import com.fincity.saas.commons.model.condition.AbstractCondition;
-import com.fincity.saas.commons.security.jwt.ContextAuthentication;
-import com.fincity.saas.commons.security.model.ClientUrlPattern;
-import com.fincity.saas.commons.security.util.SecurityContextUtil;
-import com.fincity.saas.commons.util.BooleanUtil;
-import com.fincity.saas.commons.util.LogUtil;
-import com.fincity.security.jooq.enums.SecurityClientStatusCode;
-import com.fincity.security.dto.Client;
-import com.fincity.security.dto.ClientPasswordPolicy;
-import com.fincity.security.dto.Package;
-import com.fincity.security.dto.Role;
-import com.fincity.security.jooq.tables.records.SecurityClientPackageRecord;
-import com.fincity.security.jooq.tables.records.SecurityClientRecord;
-import com.fincity.security.jooq.tables.records.SecurityUserRolePermissionRecord;
-
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.context.Context;
@@ -272,20 +271,20 @@ public class ClientDAO extends AbstractUpdatableDAO<SecurityClientRecord, ULong,
 	public Mono<Boolean> makeClientActiveIfInActive(ULong clientId) {
 
 		return Mono.from(this.dslContext.update(SECURITY_CLIENT)
-		        .set(SECURITY_CLIENT.STATUS_CODE, SecurityClientStatusCode.ACTIVE)
-		        .where(SECURITY_CLIENT.ID.eq(clientId)
-		                .and(SECURITY_CLIENT.STATUS_CODE.eq(SecurityClientStatusCode.INACTIVE))))
-		        .map(e -> e > 0);
+				.set(SECURITY_CLIENT.STATUS_CODE, SecurityClientStatusCode.ACTIVE)
+				.where(SECURITY_CLIENT.ID.eq(clientId)
+						.and(SECURITY_CLIENT.STATUS_CODE.eq(SecurityClientStatusCode.INACTIVE))))
+				.map(e -> e > 0);
 
 	}
 
 	public Mono<Boolean> makeClientInActive(ULong clientId) {
 
 		return Mono.from(this.dslContext.update(SECURITY_CLIENT)
-		        .set(SECURITY_CLIENT.STATUS_CODE, SecurityClientStatusCode.INACTIVE)
-		        .where(SECURITY_CLIENT.ID.eq(clientId)
-		                .and(SECURITY_CLIENT.STATUS_CODE.ne(SecurityClientStatusCode.DELETED))))
-		        .map(e -> e > 0);
+				.set(SECURITY_CLIENT.STATUS_CODE, SecurityClientStatusCode.INACTIVE)
+				.where(SECURITY_CLIENT.ID.eq(clientId)
+						.and(SECURITY_CLIENT.STATUS_CODE.ne(SecurityClientStatusCode.DELETED))))
+				.map(e -> e > 0);
 	}
 
 	public Mono<Client> getClientBy(String clientCode) {
@@ -545,5 +544,4 @@ public class ClientDAO extends AbstractUpdatableDAO<SecurityClientRecord, ULong,
 				.limit(1))
 				.map(Record1::value1);
 	}
-
 }
